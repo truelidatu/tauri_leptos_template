@@ -1,7 +1,11 @@
+use futures_util::StreamExt;
+use leptos::leptos_dom::logging::console_log;
 use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+use ws_stream_wasm::{WsMessage, WsMeta};
+use futures_util::SinkExt;
 
 #[wasm_bindgen]
 extern "C" {
@@ -18,6 +22,13 @@ struct GreetArgs<'a> {
 pub fn App() -> impl IntoView {
     let (name, set_name) = signal(String::new());
     let (greet_msg, set_greet_msg) = signal(String::new());
+    let (ws_tx, set_ws_tx) = signal_local(None);
+    let (msg_to_send, set_msg_to_send) = signal(String::new());
+
+    let update_msg_to_send = move |ev| {
+        let v = event_target_value(&ev);
+        set_msg_to_send.set(v);
+    };
 
     let update_name = move |ev| {
         let v = event_target_value(&ev);
@@ -39,19 +50,52 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let connect_to_websocket = move |_| {
+        spawn_local(async move {
+            let (mut ws, wsio) = WsMeta::connect("ws://127.0.0.1:6789/rpc", None)
+                .await
+                .expect_throw("assume the connection succeeds");
+
+            let (mut tx, mut rx) = wsio.split();
+
+            // receive messages from the server
+            spawn_local(async move {
+                while let Some(msg) = rx.next().await {
+                    console_log(&format!("Received message: {:?}", msg));
+                }
+            });
+
+            // Send coroutine
+            let (out_tx, mut out_rx) = local_channel::mpsc::channel();
+            set_ws_tx.set(Some(out_tx));
+
+            spawn_local(async move {
+                while let Some(msg) = out_rx.next().await {
+                    if let Err(e) = tx.send(msg).await {
+                        console_log(&format!("Error sending ws message: {:?}", e));
+                    }
+                }
+            });
+        });
+    };
+
+    let handle_send_message = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let msg = msg_to_send.get_untracked();
+        if msg.is_empty() {
+            return;
+        }
+
+        if let Some(tx) = ws_tx.get_untracked() {
+            if let Err(e) = tx.send(WsMessage::Text(msg)) {
+                console_log(&format!("Error sending message: {:?}", e));
+            }
+        }
+    };
+
     view! {
         <main class="container">
-            <h1>"Welcome to Tauri + Leptos"</h1>
-
-            <div class="row">
-                <a href="https://tauri.app" target="_blank">
-                    <img src="public/tauri.svg" class="logo tauri" alt="Tauri logo"/>
-                </a>
-                <a href="https://docs.rs/leptos/" target="_blank">
-                    <img src="public/leptos.svg" class="logo leptos" alt="Leptos logo"/>
-                </a>
-            </div>
-            <p>"Click on the Tauri and Leptos logos to learn more."</p>
+            <h1>"Tauri + Leptos Template"</h1>
 
             <form class="row" on:submit=greet>
                 <input
@@ -60,6 +104,15 @@ pub fn App() -> impl IntoView {
                     on:input=update_name
                 />
                 <button type="submit">"Greet"</button>
+            </form>
+
+            <button on:click=connect_to_websocket>"Connect to WebSocket server"</button>
+            <form class="row" on:submit=handle_send_message>
+                <input
+                    placeholder="Message to send"
+                    on:input=update_msg_to_send
+                />
+                <button type="submit">"Send"</button>
             </form>
             <p>{ move || greet_msg.get() }</p>
         </main>
