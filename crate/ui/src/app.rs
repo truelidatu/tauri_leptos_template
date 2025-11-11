@@ -52,7 +52,7 @@ pub fn App() -> impl IntoView {
 
     let connect_to_websocket = move |_| {
         spawn_local(async move {
-            let (mut ws, wsio) = WsMeta::connect("ws://127.0.0.1:6789/rpc", None)
+            let (mut _ws, wsio) = WsMeta::connect("ws://127.0.0.1:6789/rpc", None)
                 .await
                 .expect_throw("assume the connection succeeds");
 
@@ -93,6 +93,26 @@ pub fn App() -> impl IntoView {
         }
     };
 
+    // let (calculator, set_calculator) = signal_local(None);
+
+    let setup_rpc = move |_| {
+        spawn_local(async move {
+            let (mut _ws, wsio) = WsMeta::connect("ws://127.0.0.1:6789/rpc", None)
+                .await
+                .expect_throw("assume the connection succeeds");
+
+            // let (stub, mut service) = grsrpc::Builder::new(wsio)
+            //     .with_client::<CalculatorClient>()
+            //     .with_service::<DisplayService>(DisplayServiceImpl)
+            //     .build()
+            //     .await
+            //     .expect_throw("assume the setup succeeds");
+
+            // set_calculator.set(Some(stub));
+            // spawn_local(service);
+        });
+    };
+
     view! {
         <main class="container">
             <h1>"Tauri + Leptos Template"</h1>
@@ -115,6 +135,7 @@ pub fn App() -> impl IntoView {
                 <button type="submit">"Send"</button>
             </form>
             <p>{ move || greet_msg.get() }</p>
+            <button on:click=setup_rpc>"Setup RPC"</button>
         </main>
     }
 }
