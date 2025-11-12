@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.datu.tauri_leptos_template",
   "build": {
-    "beforeDevCommand": "trunk serve",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "trunk build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "trunk serve --config ../crate/ui/Trunk.toml",
+    "devUrl": "http://localhost:1480",
+    "beforeBuildCommand": "trunk build --config ../crate/ui/Trunk.toml",
+    "frontendDist": "../ui/dist"
   },
   "app": {
     "withGlobalTauri": true,
