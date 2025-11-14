@@ -53,6 +53,9 @@ impl WebSocketServer {
 
         println!("Client connected: {}", client_id);
 
+        let handle = tokio::runtime::Handle::current();
+        
+
         loop {
             if let Some(msg) = socket.recv().await {
                 match msg {

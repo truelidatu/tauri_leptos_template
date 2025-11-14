@@ -1,4 +1,5 @@
 mod app;
+mod rpc_transport;
 
 use app::*;
 use leptos::prelude::*;

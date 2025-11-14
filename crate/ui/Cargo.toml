@@ -16,5 +16,10 @@ console_error_panic_hook = "0.1.7"
 ws_stream_wasm = "0.7"
 futures-util = "0.3"
 local-channel = "0.1"
+futures-sink = "0.3"
+
+
+##### local dependencies
+grsrpc = {path = "../grsrpc"}
 
 
