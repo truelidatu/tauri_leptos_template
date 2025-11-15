@@ -4,6 +4,8 @@ use leptos::leptos_dom::logging::console_log;
 use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::{Deserialize, Serialize};
+use shared::TaskDisplay;
+use shared::TaskDisplayService;
 use wasm_bindgen::prelude::*;
 use ws_stream_wasm::{WsMessage, WsMeta};
 
@@ -113,7 +115,7 @@ pub fn App() -> impl IntoView {
             let transport = crate::rpc_transport::WasmWsTransport::new(wsio);
             let (stub, engine) = grsrpc::Builder::new(transport)
                 .with_client::<CalculatorClient>()
-                // .with_service::<DisplayService>(DisplayServiceImpl)
+                .with_service::<TaskDisplayService<_>>(TaskDisplayServiceImpl)
                 .build();
 
             set_calculator.set(Some(stub));
@@ -140,6 +142,17 @@ pub fn App() -> impl IntoView {
             if let Some(ref mut calculator) = calc.get_untracked() {
                 let result = calculator.add(555, 666).await;
                 log_info(&format!("Calculator result: {}", result));
+            } else {
+                log_info(&format!("Calculator not set up"));
+            }
+        });
+    };
+
+    let handle_call_update_task_status = move |_| {
+        spawn_local(async move {
+            if let Some(ref mut calculator) = calculator.get_untracked() {
+                let result = calculator.call_update_task_status().await;
+                log_info(&format!("call_update_task_status result: {:?}", result));
             } else {
                 log_info(&format!("Calculator not set up"));
             }
@@ -175,9 +188,22 @@ pub fn App() -> impl IntoView {
                 />
                 <button type="submit">"Send"</button>
             </form>
+            <button on:click=handle_call_update_task_status>"Call Update Task Status"</button>
         </main>
     }
 }
+
+
+struct TaskDisplayServiceImpl;
+
+impl TaskDisplay for TaskDisplayServiceImpl {
+    fn update_task_status(&self, task_id: u32, status: String) -> String {
+        log_info(&format!("update_task_status({}, {})", task_id, status));
+        "updated".to_string()
+    }
+}
+
+
 
 #[derive(Clone)]
 struct CalculatorClient {
@@ -202,28 +228,62 @@ impl CalculatorClient {
             .borrow_mut()
             .insert(__seq_id, __response_tx);
         // TODO: handle error
-        self.request_tx.unbounded_send((__seq_id, __request)).unwrap();
+        self.request_tx
+            .unbounded_send((__seq_id, __request))
+            .unwrap();
 
         let __response_future = grsrpc::futures_util::FutureExt::map(__response_rx, |response| {
             let response = response.unwrap();
-            match response {
-                CalculatorResponse::Add(res) => res,
-            }
+            let CalculatorResponse::Add(__inner) = response else {
+                panic!("Unexpected response type");
+            };
+            __inner
         });
         let __abort_tx = self.abort_tx.clone();
-        let __abort = std::boxed::Box::new(move || (__abort_tx.unbounded_send(__seq_id).unwrap()));
-        grsrpc::client::RequestFuture::new(__response_future, __abort)
+        grsrpc::client::RequestFuture::new(
+            __response_future,
+            std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
+        )
+    }
+
+    pub fn call_update_task_status(&mut self) -> grsrpc::client::RequestFuture<()> {
+        let __seq_id = self.seq_id.replace_with(|seq_id| seq_id.wrapping_add(1));
+        let __request = CalculatorRequest::CallUpdateTaskStatus;
+
+        let (__response_tx, __response_rx) = grsrpc::futures_channel::oneshot::channel();
+        self.callback_map
+            .borrow_mut()
+            .insert(__seq_id, __response_tx);
+        // TODO: handle error
+        self.request_tx
+            .unbounded_send((__seq_id, __request))
+            .unwrap();
+
+        let __response_future = grsrpc::futures_util::FutureExt::map(__response_rx, |response| {
+            let response = response.unwrap();
+            let CalculatorResponse::CallUpdateTaskStatus(__inner) = response else {
+                panic!("Unexpected response type");
+            };
+            __inner
+        });
+        let __abort_tx = self.abort_tx.clone();
+        grsrpc::client::RequestFuture::new(
+            __response_future,
+            std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
+        )
     }
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorRequest {
     Add { a: i32, b: i32 },
+    CallUpdateTaskStatus,
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorResponse {
     Add(i32),
+    CallUpdateTaskStatus(()),
 }
 
 impl From<grsrpc::client::Configuration<CalculatorRequest, CalculatorResponse>>
@@ -243,3 +303,4 @@ impl From<grsrpc::client::Configuration<CalculatorRequest, CalculatorResponse>>
         }
     }
 }
+

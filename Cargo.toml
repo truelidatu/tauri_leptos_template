@@ -1,8 +1,12 @@
 
 [workspace]
-members = ["crate/backend-tauri", "crate/ui", "crate/grsrpc"]
+members = ["crate/backend-tauri", "crate/ui", "crate/shared"]
 resolver = "2"
 
 [workspace.package]
 publish = false
 edition = "2024"
+
+[workspace.dependencies]
+grsrpc = {path = "../grsrpc/grsrpc", features=["macros"]}
+serde = { version = "1", features = ["derive"] }

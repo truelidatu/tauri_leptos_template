@@ -6,7 +6,8 @@ use axum::{
     response::Response,
 };
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use std::sync::{Arc, Mutex};
+use shared::TaskDisplayClient;
+use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
 use std::{
     collections::HashMap,
     pin::Pin,
@@ -89,9 +90,12 @@ impl WebSocketServer {
         println!("Client connected: {}", client_id);
 
         let transport = WsTransport::new(socket);
-        let service = grsrpc::Builder::new(transport)
-            // .with_client::<CalculatorClient>()
-            .with_service::<CalculatorService<_>>(CalculatorServiceImpl)
+        let state = Rc::new(RefCell::new(None));
+        let calculator_service_impl = CalculatorServiceImpl::new(state.clone());
+        
+        let (task_display_stub, service) = grsrpc::Builder::new(transport)
+            .with_client::<TaskDisplayClient>()
+            .with_service::<CalculatorService<_>>(calculator_service_impl)  
             .build();
         tokio::task::spawn_local(async move{
             println!("CalculatorService started");
@@ -100,6 +104,8 @@ impl WebSocketServer {
             }
             println!("CalculatorService finished");
         });
+        let task_display_stub_clone = task_display_stub.clone();
+        *state.borrow_mut() = Some(task_display_stub_clone);
     }
 }
 
@@ -117,12 +123,17 @@ impl<T: Calculator> grsrpc::service::Service for CalculatorService<T> {
         __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
         __request: Self::Request,
     ) -> (usize, Option<Self::Response>) {
-        match __request {
-            CalculatorRequest::Add { a, b } => {
-                let result = self.server_impl.add(a, b);
-                (__seq_id, Some(CalculatorResponse::Add(result)))
+        let __result = match __request {
+            Self::Request::Add { a, b } => {
+                let __response = self.server_impl.add(a, b);
+                Some(CalculatorResponse::Add(__response))
             }
-        }
+            Self::Request::CallUpdateTaskStatus => {
+                let __response = self.server_impl.call_update_task_status().await;
+                Some(CalculatorResponse::CallUpdateTaskStatus(__response))
+            }
+        };
+        (__seq_id, __result)
     }
 }
 
@@ -134,24 +145,44 @@ impl<T: Calculator> std::convert::From<T> for CalculatorService<T> {
 
 trait Calculator {
     fn add(&self, a: i32, b: i32) -> i32;
+    async fn call_update_task_status(&self) -> ();
 }
-struct CalculatorServiceImpl;
+struct CalculatorServiceImpl {
+    task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>,
+}
+
+impl CalculatorServiceImpl {
+    pub fn new(task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>) -> Self {
+        Self { task_display_stub }
+    }
+}
 
 impl Calculator for CalculatorServiceImpl {
     fn add(&self, a: i32, b: i32) -> i32 {
         println!("CalculatorServiceImpl::add({}, {})", a, b);
         a + b
     }
+    async fn call_update_task_status(&self) -> () {
+        if let Some(task_display_stub) = self.task_display_stub.borrow().as_ref() {
+            let res = task_display_stub.update_task_status(333, "running".to_string()).await;
+            println!("call_update_task_status {:?}", res);
+        }
+        else {
+            println!("task_display_stub is None");
+        }
+    }
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorRequest {
     Add { a: i32, b: i32 },
+    CallUpdateTaskStatus,
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorResponse {
     Add(i32),
+    CallUpdateTaskStatus(()),
 }
 
 struct WsTransport(WebSocket);
