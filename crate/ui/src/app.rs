@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use ws_stream_wasm::{WsMessage, WsMeta};
 
+use crate::web_utils::log_error;
+use crate::web_utils::log_info;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "core"])]
@@ -78,7 +81,7 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 while let Some(msg) = out_rx.next().await {
                     if let Err(e) = tx.send(msg).await {
-                        console_log(&format!("Error sending ws message: {:?}", e));
+                        log_error(&format!("Error sending ws message: {:?}", e));
                     }
                 }
             });
@@ -94,7 +97,7 @@ pub fn App() -> impl IntoView {
 
         if let Some(tx) = ws_tx.get_untracked() {
             if let Err(e) = tx.send(WsMessage::Text(msg)) {
-                console_log(&format!("Error sending message: {:?}", e));
+                log_error(&format!("Error sending message: {:?}", e));
             }
         }
     };
@@ -106,15 +109,22 @@ pub fn App() -> impl IntoView {
                 .await
                 .expect_throw("assume the connection succeeds");
 
-
+            log_info("Websocket connected");
             let transport = crate::rpc_transport::WasmWsTransport::new(wsio);
-            let (stub, service) = grsrpc::Builder::new(transport)
+            let (stub, engine) = grsrpc::Builder::new(transport)
                 .with_client::<CalculatorClient>()
                 // .with_service::<DisplayService>(DisplayServiceImpl)
                 .build();
 
             set_calculator.set(Some(stub));
-            spawn_local(service);
+            spawn_local(async move {
+                log_info("RPC engine started");
+                if let Err(_e) = engine.await {
+                    // Handle error
+                    log_error(&format!("Error in RPC engine: {:?}", _e));
+                }
+                log_info("RPC engine terminated");
+            });
         });
     };
 
@@ -127,12 +137,11 @@ pub fn App() -> impl IntoView {
 
         let calc = calculator;
         spawn_local(async move {
-            if let Some(calculator) = calc.get() {
-                let mut calc = calculator;
-                let result = calc.add(555, 666).await;
-                console_log(&format!("Calculator result: {}", result));
+            if let Some(ref mut calculator) = calc.get_untracked() {
+                let result = calculator.add(555, 666).await;
+                log_info(&format!("Calculator result: {}", result));
             } else {
-                console_log(&format!("Calculator not set up"));
+                log_info(&format!("Calculator not set up"));
             }
         });
     };
