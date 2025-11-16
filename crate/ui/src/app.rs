@@ -201,6 +201,12 @@ impl TaskDisplay for TaskDisplayServiceImpl {
         log_info(&format!("update_task_status({}, {})", task_id, status));
         "updated".to_string()
     }
+
+    async fn async_fn_test(&self, task_id: u32) -> String {
+        
+        log_info(&format!("async_fn_test({})", task_id));
+        "async_fn_test completed".to_string()
+    }
 }
 
 

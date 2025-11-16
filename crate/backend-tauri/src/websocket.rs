@@ -7,7 +7,11 @@ use axum::{
 };
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use shared::TaskDisplayClient;
-use std::{cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 use std::{
     collections::HashMap,
     pin::Pin,
@@ -26,15 +30,12 @@ pub struct WebSocketServer {
 
 impl WebSocketServer {
     pub fn new() -> Self {
-        
-
         Self {
             clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn start(&self, port: u16) -> Result<(), Box<dyn std::error::Error>> {
-
         let (socket_tx, mut socket_rx) = mpsc::unbounded_channel::<WebSocket>();
 
         // Start the single-threaded runtime to handle all sockets
@@ -92,12 +93,12 @@ impl WebSocketServer {
         let transport = WsTransport::new(socket);
         let state = Rc::new(RefCell::new(None));
         let calculator_service_impl = CalculatorServiceImpl::new(state.clone());
-        
+
         let (task_display_stub, service) = grsrpc::Builder::new(transport)
             .with_client::<TaskDisplayClient>()
-            .with_service::<CalculatorService<_>>(calculator_service_impl)  
+            .with_service::<CalculatorService<_>>(calculator_service_impl)
             .build();
-        tokio::task::spawn_local(async move{
+        tokio::task::spawn_local(async move {
             println!("CalculatorService started");
             if let Err(e) = service.await {
                 eprintln!("CalculatorService finished with error: {:?}", e);
@@ -117,10 +118,17 @@ impl<T: Calculator> grsrpc::service::Service for CalculatorService<T> {
     type Request = CalculatorRequest;
     type Response = CalculatorResponse;
 
-    async fn execute(
+    fn is_async_request(__request: &Self::Request) -> bool {
+        match __request {
+            Self::Request::CallUpdateTaskStatus => true,
+            Self::Request::Add { a: _, b: _ } => false,
+            _ => false,
+        }
+    }
+
+    fn execute(
         &self,
         __seq_id: usize,
-        __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
         __request: Self::Request,
     ) -> (usize, Option<Self::Response>) {
         let __result = match __request {
@@ -128,10 +136,23 @@ impl<T: Calculator> grsrpc::service::Service for CalculatorService<T> {
                 let __response = self.server_impl.add(a, b);
                 Some(CalculatorResponse::Add(__response))
             }
+            _ => panic!("unexpected request variant, the request handler may be async"),
+        };
+        (__seq_id, __result)
+    }
+
+    async fn execute_async(
+        &self,
+        __seq_id: usize,
+        __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
+        __request: Self::Request,
+    ) -> (usize, Option<Self::Response>) {
+        let __result = match __request {
             Self::Request::CallUpdateTaskStatus => {
                 let __response = self.server_impl.call_update_task_status().await;
                 Some(CalculatorResponse::CallUpdateTaskStatus(__response))
             }
+            _ => panic!("unexpected request variant, the request handler may be sync"),
         };
         (__seq_id, __result)
     }
@@ -164,10 +185,11 @@ impl Calculator for CalculatorServiceImpl {
     }
     async fn call_update_task_status(&self) -> () {
         if let Some(task_display_stub) = self.task_display_stub.borrow().as_ref() {
-            let res = task_display_stub.update_task_status(333, "running".to_string()).await;
+            let res = task_display_stub
+                .async_fn_test(333)
+                .await;
             println!("call_update_task_status {:?}", res);
-        }
-        else {
+        } else {
             println!("task_display_stub is None");
         }
     }

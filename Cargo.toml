@@ -8,5 +8,5 @@ publish = false
 edition = "2024"
 
 [workspace.dependencies]
-grsrpc = {path = "../grsrpc/grsrpc", features=["macros"]}
+grsrpc = {version = "0.1.1", path = "../grsrpc/grsrpc", features=["macros"]}
 serde = { version = "1", features = ["derive"] }
