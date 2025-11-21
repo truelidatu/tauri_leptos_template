@@ -5,7 +5,7 @@ use axum::{
     },
     response::Response,
 };
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use shared::TaskDisplayClient;
 use std::{
     cell::RefCell,
@@ -92,11 +92,18 @@ impl WebSocketServer {
 
         let transport = WsTransport::new(socket);
         let state = Rc::new(RefCell::new(None));
-        let calculator_service_impl = CalculatorServiceImpl::new(state.clone());
+        let calculator_service_impl = CalculatorServiceImpl::new();
 
         let (task_display_stub, service) = grsrpc::Builder::new(transport)
             .with_client::<TaskDisplayClient>()
-            .with_service::<CalculatorService<_>>(calculator_service_impl)
+            // .with_service::<CalculatorService<_>>(calculator_service_impl)
+            .with_multi_thread_service::<CalculatorMultiThreadService<_, _>, _, _>(
+                calculator_service_impl,
+                move |f| {
+                    // let pinned_future = Box::pin(f);
+                    tokio::task::spawn(f);
+                },
+            )
             .build();
         tokio::task::spawn_local(async move {
             println!("CalculatorService started");
@@ -122,6 +129,7 @@ impl<T: Calculator> grsrpc::service::Service for CalculatorService<T> {
         match __request {
             Self::Request::CallUpdateTaskStatus => true,
             Self::Request::Add { a: _, b: _ } => false,
+            Self::Request::AsyncWithResult { name: _ } => true,
             _ => false,
         }
     }
@@ -144,13 +152,34 @@ impl<T: Calculator> grsrpc::service::Service for CalculatorService<T> {
     async fn execute_async(
         &self,
         __seq_id: usize,
-        __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
+        mut __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
         __request: Self::Request,
     ) -> (usize, Option<Self::Response>) {
         let __result = match __request {
             Self::Request::CallUpdateTaskStatus => {
-                let __response = self.server_impl.call_update_task_status().await;
-                Some(CalculatorResponse::CallUpdateTaskStatus(__response))
+                let __task = grsrpc::futures_util::FutureExt::fuse(
+                    self.server_impl.call_update_task_status(),
+                );
+                grsrpc::pin_utils::pin_mut!(__task);
+                grsrpc::futures_util::select! {
+                    _ = __abort_rx => None,
+                    __response = __task => Some({
+                        // #return_response
+                        CalculatorResponse::CallUpdateTaskStatus(__response)
+                    })
+                }
+            }
+            Self::Request::AsyncWithResult { name } => {
+                let __task =
+                    grsrpc::futures_util::FutureExt::fuse(self.server_impl.async_with_result(name));
+                grsrpc::pin_utils::pin_mut!(__task);
+                grsrpc::futures_util::select! {
+                    _ = __abort_rx => None,
+                    __response = __task => Some({
+                        // #return_response
+                        CalculatorResponse::AsyncWithResult(__response)
+                    })
+                }
             }
             _ => panic!("unexpected request variant, the request handler may be sync"),
         };
@@ -164,34 +193,151 @@ impl<T: Calculator> std::convert::From<T> for CalculatorService<T> {
     }
 }
 
-trait Calculator {
-    fn add(&self, a: i32, b: i32) -> i32;
-    async fn call_update_task_status(&self) -> ();
-}
-struct CalculatorServiceImpl {
-    task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>,
+struct CalculatorMultiThreadService<T, F>
+where
+    F: Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> (),
+{
+    server_impl: Arc<T>,
+    // spawner: grsrpc::service::MultiThreadSpawner,
+    spawner: F,
 }
 
-impl CalculatorServiceImpl {
-    pub fn new(task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>) -> Self {
-        Self { task_display_stub }
+impl<T: Calculator, F> grsrpc::service::Service for CalculatorMultiThreadService<T, F>
+where
+    F: Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> (),
+    T: Calculator + Send + Sync + 'static,
+{
+    type Request = CalculatorRequest;
+    type Response = CalculatorResponse;
+
+    fn is_async_request(__request: &Self::Request) -> bool {
+        match __request {
+            Self::Request::CallUpdateTaskStatus => true,
+            Self::Request::Add { a: _, b: _ } => false,
+            Self::Request::AsyncWithResult { name: _ } => true,
+            _ => false,
+        }
+    }
+    fn execute(
+        &self,
+        __seq_id: usize,
+        __request: Self::Request,
+    ) -> (usize, Option<Self::Response>) {
+        let __result = match __request {
+            Self::Request::Add { a, b } => {
+                let __response = self.server_impl.add(a, b);
+                Some(CalculatorResponse::Add(__response))
+            }
+            _ => panic!("unexpected request variant, the request handler may be async"),
+        };
+        (__seq_id, __result)
+    }
+
+    async fn execute_async(
+        &self,
+        __seq_id: usize,
+        mut __abort_rx: grsrpc::futures_channel::oneshot::Receiver<()>,
+        __request: Self::Request,
+    ) -> (usize, Option<Self::Response>) {
+        let __result = match __request {
+            Self::Request::CallUpdateTaskStatus => {
+                let (res_tx, res_rx) = grsrpc::futures_channel::oneshot::channel();
+                let impl_clone = self.server_impl.clone();
+                (self.spawner)(Box::pin(async move {
+                    let __task =
+                        grsrpc::futures_util::FutureExt::fuse(impl_clone.call_update_task_status());
+                    grsrpc::pin_utils::pin_mut!(__task);
+                    let res = grsrpc::futures_util::select! {
+                        _ = __abort_rx => None,
+                        __response = __task => Some({
+                            // #return_response
+                            CalculatorResponse::CallUpdateTaskStatus(__response)
+                        })
+                    };
+                    res_tx.send(res);
+                }));
+                // tokio::spawn(async move {
+                //     let _ = impl_clone.call_update_task_status().await;
+                // });
+                res_rx.await.unwrap()
+            }
+            Self::Request::AsyncWithResult { name } => {
+                let (res_tx, res_rx) = grsrpc::futures_channel::oneshot::channel();
+                let impl_clone = self.server_impl.clone();
+                (self.spawner)(Box::pin(async move {
+                    let __task =
+                        grsrpc::futures_util::FutureExt::fuse(impl_clone.async_with_result(name));
+                    grsrpc::pin_utils::pin_mut!(__task);
+                    let res = grsrpc::futures_util::select! {
+                        _ = __abort_rx => None,
+                        __response = __task => Some({
+                            // #return_response
+                            CalculatorResponse::AsyncWithResult(__response)
+                        })
+                    };
+                    res_tx.send(res);
+                }));
+                // tokio::spawn(async move {
+                //     let _ = impl_clone.call_update_task_status().await;
+                // });
+                res_rx.await.unwrap()
+            }
+            _ => panic!("unexpected request variant, the request handler may be sync"),
+        };
+        (__seq_id, __result)
     }
 }
 
+impl<T: Calculator, F> std::convert::From<(T, F)> for CalculatorMultiThreadService<T, F>
+where
+    F: Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> (),
+{
+    fn from((server_impl, spawner): (T, F)) -> Self {
+        Self {
+            server_impl: Arc::new(server_impl),
+            spawner,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+trait Calculator {
+    fn add(&self, a: i32, b: i32) -> i32;
+    async fn async_with_result(&self, name: String) -> String;
+    async fn call_update_task_status(&self) -> ();
+}
+struct CalculatorServiceImpl {
+    // task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>,
+}
+
+impl CalculatorServiceImpl {
+    // pub fn new(task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>) -> Self {
+    //     Self { task_display_stub }
+    // }
+    pub fn new() -> Self {
+        Self {
+            // task_display_stub,
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl Calculator for CalculatorServiceImpl {
     fn add(&self, a: i32, b: i32) -> i32 {
         println!("CalculatorServiceImpl::add({}, {})", a, b);
         a + b
     }
     async fn call_update_task_status(&self) -> () {
-        if let Some(task_display_stub) = self.task_display_stub.borrow().as_ref() {
-            let res = task_display_stub
-                .async_fn_test(333)
-                .await;
-            println!("call_update_task_status {:?}", res);
-        } else {
-            println!("task_display_stub is None");
-        }
+        // if let Some(task_display_stub) = self.task_display_stub.borrow().as_ref() {
+        //     let res = task_display_stub.async_fn_test(333).await;
+        //     println!("call_update_task_status {:?}", res);
+        // } else {
+        //     println!("task_display_stub is None");
+        // }
+    }
+    async fn async_with_result(&self, name: String) -> String {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        format!("async_with_result({})", name)
     }
 }
 
@@ -199,12 +345,14 @@ impl Calculator for CalculatorServiceImpl {
 enum CalculatorRequest {
     Add { a: i32, b: i32 },
     CallUpdateTaskStatus,
+    AsyncWithResult { name: String },
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorResponse {
     Add(i32),
     CallUpdateTaskStatus(()),
+    AsyncWithResult(String),
 }
 
 struct WsTransport(WebSocket);

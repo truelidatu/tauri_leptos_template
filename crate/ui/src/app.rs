@@ -163,6 +163,21 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let handle_call_async_with_result = move |_| {
+        let msg = rpc_msg_to_send.get_untracked();
+        if msg.is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            if let Some(ref mut calculator) = calculator.get_untracked() {
+                let result = calculator.async_with_result(msg).await;
+                log_info(&format!("async_with_result result: {:?}", result));
+            } else {
+                log_info(&format!("Calculator not set up"));
+            }
+        });
+    };
+
     view! {
         <main class="container">
             <h1>"Tauri + Leptos Template"</h1>
@@ -193,6 +208,7 @@ pub fn App() -> impl IntoView {
                 <button type="submit">"Send"</button>
             </form>
             <button on:click=handle_call_update_task_status>"Call Update Task Status"</button>
+            <button on:click=handle_call_async_with_result>"Call Async With Result"</button>
         </main>
     }
 }
@@ -279,18 +295,50 @@ impl CalculatorClient {
             std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
         )
     }
+    
+
+    pub fn async_with_result(&mut self, name: String) -> grsrpc::client::RequestFuture<String> {
+        let __seq_id = self.seq_id.replace_with(|seq_id| seq_id.wrapping_add(1));
+        let __request = CalculatorRequest::AsyncWithResult(name);
+
+        let (__response_tx, __response_rx) = grsrpc::futures_channel::oneshot::channel();
+        self.callback_map
+            .borrow_mut()
+            .insert(__seq_id, __response_tx);
+        // TODO: handle error
+        self.request_tx
+            .unbounded_send((__seq_id, __request))
+            .unwrap();
+
+        let __response_future = grsrpc::futures_util::FutureExt::map(__response_rx, |response| {
+            let response = response.unwrap();
+            let CalculatorResponse::AsyncWithResult(__inner) = response else {
+                panic!("Unexpected response type");
+            };
+            __inner
+        });
+        let __abort_tx = self.abort_tx.clone();
+        grsrpc::client::RequestFuture::new(
+            __response_future,
+            std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
+        )
+        
+    }
+
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorRequest {
     Add { a: i32, b: i32 },
     CallUpdateTaskStatus,
+    AsyncWithResult(String),
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
 enum CalculatorResponse {
     Add(i32),
     CallUpdateTaskStatus(()),
+    AsyncWithResult(String),
 }
 
 impl From<grsrpc::client::Configuration<CalculatorRequest, CalculatorResponse>>
@@ -419,6 +467,14 @@ async fn client_relay_actor(
                     let res = local_client_clone.call_update_task_status().await;
                     // relay_tx.unbounded_send(CalculatorResponse::CallUpdateTaskStatus(res)).unwrap();
                     res_tx.send(CalculatorResponse::CallUpdateTaskStatus(res));
+                    Ok(())
+                });
+            }
+            (res_tx, CalculatorRequest::AsyncWithResult(name)) => {
+                task_set_handle.add(async move {
+                    let res = local_client_clone.async_with_result(name).await;
+                    // relay_tx.unbounded_send(CalculatorResponse::AsyncWithResult(res)).unwrap();
+                    res_tx.send(CalculatorResponse::AsyncWithResult(res));
                     Ok(())
                 });
             }
