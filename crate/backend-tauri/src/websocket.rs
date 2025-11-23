@@ -39,7 +39,10 @@ impl WebSocketServer {
         let (socket_tx, mut socket_rx) = mpsc::unbounded_channel::<WebSocket>();
 
         // Start the single-threaded runtime to handle all sockets
+                let (task_tx, task_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
+
         std::thread::spawn(move || {
+
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

@@ -295,7 +295,6 @@ impl CalculatorClient {
             std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
         )
     }
-    
 
     pub fn async_with_result(&mut self, name: String) -> grsrpc::client::RequestFuture<String> {
         let __seq_id = self.seq_id.replace_with(|seq_id| seq_id.wrapping_add(1));
@@ -322,9 +321,7 @@ impl CalculatorClient {
             __response_future,
             std::boxed::Box::new(move || (__abort_tx).unbounded_send(__seq_id).unwrap()),
         )
-        
     }
-
 }
 
 #[derive(grsrpc::serde::Serialize, grsrpc::serde::Deserialize)]
@@ -366,8 +363,53 @@ struct CalculatorMultiThreadClient {
     // task_set_handle: grsrpc::task_set::TaskSetHandle<()>,
     relay_tx: grsrpc::futures_channel::mpsc::UnboundedSender<(
         grsrpc::futures_channel::oneshot::Sender<CalculatorResponse>,
+        grsrpc::futures_channel::oneshot::Receiver<()>,
         CalculatorRequest,
     )>,
+}
+
+impl CalculatorMultiThreadClient {
+    async fn client_relay_actor(
+        mut relay_rx: grsrpc::futures_channel::mpsc::UnboundedReceiver<(
+            grsrpc::futures_channel::oneshot::Sender<CalculatorResponse>,
+            grsrpc::futures_channel::oneshot::Receiver<()>,
+            CalculatorRequest,
+        )>,
+        client: CalculatorClient,
+        mut task_set_handle: grsrpc::task_set::TaskSetHandle<()>,
+    ) -> Result<(), ()> {
+        while let Some(request) = relay_rx.next().await {
+            let mut local_client_clone = client.clone();
+
+            match request {
+                (res_tx, abort_relay_rx, CalculatorRequest::Add { a, b }) => {
+                    task_set_handle.add(async move {
+                        let res = local_client_clone.add(a, b).await;
+                        // relay_tx.unbounded_send(CalculatorResponse::Add(res)).unwrap();
+                        res_tx.send(CalculatorResponse::Add(res));
+                        Ok(())
+                    });
+                }
+                (res_tx, abort_relay_rx, CalculatorRequest::CallUpdateTaskStatus) => {
+                    task_set_handle.add(async move {
+                        let res = local_client_clone.call_update_task_status().await;
+                        // relay_tx.unbounded_send(CalculatorResponse::CallUpdateTaskStatus(res)).unwrap();
+                        res_tx.send(CalculatorResponse::CallUpdateTaskStatus(res));
+                        Ok(())
+                    });
+                }
+                (res_tx, abort_relay_rx, CalculatorRequest::AsyncWithResult(name)) => {
+                    task_set_handle.add(async move {
+                        let res = local_client_clone.async_with_result(name).await;
+                        // relay_tx.unbounded_send(CalculatorResponse::AsyncWithResult(res)).unwrap();
+                        res_tx.send(CalculatorResponse::AsyncWithResult(res));
+                        Ok(())
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl grsrpc::client::Client for CalculatorMultiThreadClient {
@@ -385,36 +427,55 @@ impl From<grsrpc::client::Configuration<CalculatorRequest, CalculatorResponse>>
         >,
     ) -> Self {
         let task_set_handle_clone = task_set_handle.clone();
-        let local_client =
-            CalculatorClient::from((callback_map, request_tx, abort_tx, task_set_handle_clone));
+        let local_client = CalculatorClient::from((
+            callback_map,
+            request_tx,
+            abort_tx.clone(),
+            task_set_handle_clone,
+        ));
         let (relay_tx, relay_rx) = grsrpc::futures_channel::mpsc::unbounded::<(
             grsrpc::futures_channel::oneshot::Sender<CalculatorResponse>,
+            grsrpc::futures_channel::oneshot::Receiver<()>,
             CalculatorRequest,
         )>();
+
         let ask_set_handle_clone = task_set_handle.clone();
 
-        task_set_handle.add(client_relay_actor(relay_rx, local_client, ask_set_handle_clone));
+        task_set_handle.add(Self::client_relay_actor(
+            relay_rx,
+            local_client,
+            ask_set_handle_clone,
+        ));
         Self { relay_tx }
     }
 }
 
 impl CalculatorMultiThreadClient {
-    pub async fn add(&self, a: i32, b: i32) -> i32 {
-        let (res_tx, res_rx) = grsrpc::futures_channel::oneshot::channel();
+    pub fn add(&self, a: i32, b: i32) -> grsrpc::client::MultiThreadRequestFuture<i32> {
+        let (__res_tx, __res_rx) = grsrpc::futures_channel::oneshot::channel();
+        let (__abort_relay_tx, __abort_relay_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
         self.relay_tx
-            .unbounded_send((res_tx, CalculatorRequest::Add { a, b }))
+            .unbounded_send((__res_tx, __abort_relay_rx, CalculatorRequest::Add { a, b }))
             .unwrap();
-        let CalculatorResponse::Add(res) = res_rx.await.unwrap() else {
-            panic!("Unexpected response type");
-        };
-        res
+        let __response_future = grsrpc::futures_util::FutureExt::map(__res_rx, |response| {
+            let response = response.unwrap();
+            let CalculatorResponse::Add(__inner) = response else {
+                panic!("received incorrect response variant")
+            };
+            __inner
+        });
+
+        grsrpc::client::MultiThreadRequestFuture::new(
+            __response_future,
+            std::boxed::Box::new(move || {__abort_relay_tx.send(()).unwrap()}),
+        )
     }
     pub async fn call_update_task_status(&self) -> () {
-        let (res_tx, res_rx) = grsrpc::futures_channel::oneshot::channel();
-        self.relay_tx
-            .unbounded_send((res_tx, CalculatorRequest::CallUpdateTaskStatus))
+        let (__res_tx, __res_rx) = grsrpc::futures_channel::oneshot::channel();
+        let (__abort_relay_tx, __abort_relay_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
+        self.relay_tx.unbounded_send((__res_tx, __abort_relay_rx, CalculatorRequest::CallUpdateTaskStatus {}))
             .unwrap();
-        let CalculatorResponse::CallUpdateTaskStatus(res) = res_rx.await.unwrap() else {
+        let CalculatorResponse::CallUpdateTaskStatus(res) = __res_rx.await.unwrap() else {
             panic!("Unexpected response type");
         };
         res
@@ -433,52 +494,16 @@ impl From<CalculatorClient> for CalculatorMultiThreadClient {
 
         let (relay_tx, relay_rx) = grsrpc::futures_channel::mpsc::unbounded::<(
             grsrpc::futures_channel::oneshot::Sender<CalculatorResponse>,
+            grsrpc::futures_channel::oneshot::Receiver<()>,
             CalculatorRequest,
         )>();
         let task_set_handle_clone = task_set_handle.clone();
 
-        task_set_handle.add(client_relay_actor(relay_rx, client, task_set_handle_clone));
+        task_set_handle.add(Self::client_relay_actor(
+            relay_rx,
+            client,
+            task_set_handle_clone,
+        ));
         Self { relay_tx }
     }
-}
-
-async fn client_relay_actor(
-    mut relay_rx: grsrpc::futures_channel::mpsc::UnboundedReceiver<(
-        grsrpc::futures_channel::oneshot::Sender<CalculatorResponse>,
-        CalculatorRequest,
-    )>,
-    mut client: CalculatorClient,
-    mut task_set_handle: grsrpc::task_set::TaskSetHandle<()>,
-) -> Result<(), ()> {
-    while let Some(request) = relay_rx.next().await {
-        let mut local_client_clone = client.clone();
-
-        match request {
-            (res_tx, CalculatorRequest::Add { a, b }) => {
-                task_set_handle.add(async move {
-                    let res = local_client_clone.add(a, b).await;
-                    // relay_tx.unbounded_send(CalculatorResponse::Add(res)).unwrap();
-                    res_tx.send(CalculatorResponse::Add(res));
-                    Ok(())
-                });
-            }
-            (res_tx, CalculatorRequest::CallUpdateTaskStatus) => {
-                task_set_handle.add(async move {
-                    let res = local_client_clone.call_update_task_status().await;
-                    // relay_tx.unbounded_send(CalculatorResponse::CallUpdateTaskStatus(res)).unwrap();
-                    res_tx.send(CalculatorResponse::CallUpdateTaskStatus(res));
-                    Ok(())
-                });
-            }
-            (res_tx, CalculatorRequest::AsyncWithResult(name)) => {
-                task_set_handle.add(async move {
-                    let res = local_client_clone.async_with_result(name).await;
-                    // relay_tx.unbounded_send(CalculatorResponse::AsyncWithResult(res)).unwrap();
-                    res_tx.send(CalculatorResponse::AsyncWithResult(res));
-                    Ok(())
-                });
-            }
-        }
-    }
-    Ok(())
 }
