@@ -6,6 +6,7 @@ use leptos::leptos_dom::logging::console_log;
 use leptos::task::spawn_local;
 use leptos::{ev::SubmitEvent, prelude::*};
 use serde::{Deserialize, Serialize};
+use shared::HelloWorldMultiThreadClient;
 use shared::TaskDisplay;
 use shared::TaskDisplayService;
 use wasm_bindgen::prelude::*;
@@ -106,7 +107,9 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    let (calculator, set_calculator) = signal_local(None);
+    let (calculator, set_calculator) = signal_local::<Option<CalculatorClient>>(None);
+    let (hello_world_multi_thread_client, set_hello_world_multi_thread_client) =
+        signal_local::<Option<HelloWorldMultiThreadClient>>(None);
     let setup_rpc = move |_| {
         spawn_local(async move {
             let (mut _ws, wsio) = WsMeta::connect("ws://127.0.0.1:6789/rpc", None)
@@ -116,12 +119,15 @@ pub fn App() -> impl IntoView {
             log_info("Websocket connected");
             let transport = crate::rpc_transport::WasmWsTransport::new(wsio);
             let (stub, engine) = grsrpc::Builder::new(transport)
-                .with_client::<CalculatorClient>()
+                .with_client::<HelloWorldMultiThreadClient>()
+                // .with_client::<CalculatorClient>()
                 // .with_client::<CalculatorMultiThreadClient>()
                 .with_service::<TaskDisplayService<_>>(TaskDisplayServiceImpl)
                 .build();
 
-            set_calculator.set(Some(stub));
+            // set_calculator.set(Some(stub));
+            set_hello_world_multi_thread_client.set(Some(stub));
+
             spawn_local(async move {
                 log_info("RPC engine started");
                 if let Err(_e) = engine.await {
@@ -178,6 +184,23 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let handle_call_multi_thread_async_hello_world = move |_| {
+        let msg = rpc_msg_to_send.get_untracked();
+        if msg.is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            if let Some(ref mut hello_world_multi_thread_client) =
+                hello_world_multi_thread_client.get_untracked()
+            {
+                let result = hello_world_multi_thread_client.async_hello_world(msg).await;
+                log_info(&format!("async_hello_world result: {:?}", result));
+            } else {
+                log_info(&format!("HelloWorldMultiThreadClient not set up"));
+            }
+        });
+    };
+
     view! {
         <main class="container">
             <h1>"Tauri + Leptos Template"</h1>
@@ -209,12 +232,15 @@ pub fn App() -> impl IntoView {
             </form>
             <button on:click=handle_call_update_task_status>"Call Update Task Status"</button>
             <button on:click=handle_call_async_with_result>"Call Async With Result"</button>
+
+            <button on:click=handle_call_multi_thread_async_hello_world>"Call MultiThread Async Hello World"</button>
         </main>
     }
 }
 
 struct TaskDisplayServiceImpl;
 
+// #[async_trait::async_trait]
 impl TaskDisplay for TaskDisplayServiceImpl {
     fn update_task_status(&self, task_id: u32, status: String) -> String {
         log_info(&format!("update_task_status({}, {})", task_id, status));
@@ -453,7 +479,8 @@ impl From<grsrpc::client::Configuration<CalculatorRequest, CalculatorResponse>>
 impl CalculatorMultiThreadClient {
     pub fn add(&self, a: i32, b: i32) -> grsrpc::client::MultiThreadRequestFuture<i32> {
         let (__res_tx, __res_rx) = grsrpc::futures_channel::oneshot::channel();
-        let (__abort_relay_tx, __abort_relay_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
+        let (__abort_relay_tx, __abort_relay_rx) =
+            grsrpc::futures_channel::oneshot::channel::<()>();
         self.relay_tx
             .unbounded_send((__res_tx, __abort_relay_rx, CalculatorRequest::Add { a, b }))
             .unwrap();
@@ -467,13 +494,19 @@ impl CalculatorMultiThreadClient {
 
         grsrpc::client::MultiThreadRequestFuture::new(
             __response_future,
-            std::boxed::Box::new(move || {__abort_relay_tx.send(()).unwrap()}),
+            std::boxed::Box::new(move || __abort_relay_tx.send(()).unwrap()),
         )
     }
     pub async fn call_update_task_status(&self) -> () {
         let (__res_tx, __res_rx) = grsrpc::futures_channel::oneshot::channel();
-        let (__abort_relay_tx, __abort_relay_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
-        self.relay_tx.unbounded_send((__res_tx, __abort_relay_rx, CalculatorRequest::CallUpdateTaskStatus {}))
+        let (__abort_relay_tx, __abort_relay_rx) =
+            grsrpc::futures_channel::oneshot::channel::<()>();
+        self.relay_tx
+            .unbounded_send((
+                __res_tx,
+                __abort_relay_rx,
+                CalculatorRequest::CallUpdateTaskStatus {},
+            ))
             .unwrap();
         let CalculatorResponse::CallUpdateTaskStatus(res) = __res_rx.await.unwrap() else {
             panic!("Unexpected response type");

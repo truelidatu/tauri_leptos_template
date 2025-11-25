@@ -10,3 +10,4 @@ edition = "2024"
 [workspace.dependencies]
 grsrpc = {version = "0.1.12", path = "../grsrpc/grsrpc", features=["macros", "multi_thread"]}
 serde = { version = "1", features = ["derive"] }
+async-trait = "0.1"

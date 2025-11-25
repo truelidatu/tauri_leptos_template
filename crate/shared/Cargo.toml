@@ -9,4 +9,5 @@ publish.workspace = true
 [dependencies]
 grsrpc.workspace = true
 serde.workspace = true
+async-trait.workspace = true
 #grsrpc-macro = {path = "../../../grsrpc/grsrpc-macro"}

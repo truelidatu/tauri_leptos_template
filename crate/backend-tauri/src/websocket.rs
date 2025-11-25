@@ -6,7 +6,7 @@ use axum::{
     response::Response,
 };
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use shared::TaskDisplayClient;
+use shared::{Calculator, HelloWorldMultiThread, HelloWorldMultiThreadMultiThreadService, TaskDisplayClient};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -100,8 +100,15 @@ impl WebSocketServer {
         let (task_display_stub, service) = grsrpc::Builder::new(transport)
             .with_client::<TaskDisplayClient>()
             // .with_service::<CalculatorService<_>>(calculator_service_impl)
-            .with_multi_thread_service::<CalculatorMultiThreadService<_, _>, _, _>(
-                calculator_service_impl,
+            // .with_multi_thread_service::<CalculatorMultiThreadService<_, _>, _, _>(
+            //     calculator_service_impl,
+            //     move |f| {
+            //         // let pinned_future = Box::pin(f);
+            //         tokio::task::spawn(f);
+            //     },
+            // )
+            .with_multi_thread_service::<HelloWorldMultiThreadMultiThreadService<_, _>, _, _>(
+                HelloWorldMultiThreadServiceImpl::new(),
                 move |f| {
                     // let pinned_future = Box::pin(f);
                     tokio::task::spawn(f);
@@ -278,12 +285,10 @@ where
                             CalculatorResponse::AsyncWithResult(__response)
                         })
                     };
-                    res_tx.send(res);
+                    // TODO: handle error
+                    let _ = res_tx.send(res);
                 }));
-                // tokio::spawn(async move {
-                //     let _ = impl_clone.call_update_task_status().await;
-                // });
-                res_rx.await.unwrap()
+                res_rx.await.unwrap_or(None)
             }
             _ => panic!("unexpected request variant, the request handler may be sync"),
         };
@@ -303,12 +308,7 @@ where
     }
 }
 
-#[async_trait::async_trait]
-trait Calculator {
-    fn add(&self, a: i32, b: i32) -> i32;
-    async fn async_with_result(&self, name: String) -> String;
-    async fn call_update_task_status(&self) -> ();
-}
+
 struct CalculatorServiceImpl {
     // task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>,
 }
@@ -356,6 +356,25 @@ enum CalculatorResponse {
     Add(i32),
     CallUpdateTaskStatus(()),
     AsyncWithResult(String),
+}
+
+struct HelloWorldMultiThreadServiceImpl {}
+
+impl HelloWorldMultiThreadServiceImpl {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[async_trait::async_trait]
+impl HelloWorldMultiThread for HelloWorldMultiThreadServiceImpl {
+    fn hello_world(&self, name: String) -> String {
+        format!("hello_world({})", name)
+    }
+    async fn async_hello_world(&self, name: String) -> String {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        format!("async_hello_world({})", name)
+    }
 }
 
 struct WsTransport(WebSocket);
