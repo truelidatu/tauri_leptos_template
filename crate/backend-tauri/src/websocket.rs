@@ -115,7 +115,8 @@ impl WebSocketServer {
             .with_multi_thread_service::<HelloWorldMultiThreadMultiThreadService<_, _>, _, _>(
                 HelloWorldMultiThreadServiceImpl::new(),
                 move |f| {
-                    rt_handle.spawn(f);
+                    // rt_handle.spawn(f);
+                    tauri::async_runtime::spawn(f);
                 }, // move |f| {
                    //     // let pinned_future = Box::pin(f);
                    //     tokio::task::spawn(f);
