@@ -6,7 +6,9 @@ use axum::{
     response::Response,
 };
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
-use shared::{Calculator, HelloWorldMultiThread, HelloWorldMultiThreadMultiThreadService, TaskDisplayClient};
+use shared::{
+    Calculator, HelloWorldMultiThread, HelloWorldMultiThreadMultiThreadService, TaskDisplayClient,
+};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -24,13 +26,15 @@ type Clients = Arc<Mutex<HashMap<String, WebSocket>>>;
 
 #[derive(Clone)]
 pub struct WebSocketServer {
+    handle: tokio::runtime::Handle,
     clients: Clients,
     // socket_tx: mpsc::UnboundedSender<WebSocket>,
 }
 
 impl WebSocketServer {
-    pub fn new() -> Self {
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
         Self {
+            handle,
             clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -39,10 +43,10 @@ impl WebSocketServer {
         let (socket_tx, mut socket_rx) = mpsc::unbounded_channel::<WebSocket>();
 
         // Start the single-threaded runtime to handle all sockets
-                let (task_tx, task_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
+        // let (task_tx, task_rx) = grsrpc::futures_channel::oneshot::channel::<()>();
 
+        let rt_handle = self.handle.clone();
         std::thread::spawn(move || {
-
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -54,8 +58,9 @@ impl WebSocketServer {
                 local_set
                     .run_until(async {
                         while let Some(socket) = socket_rx.recv().await {
+                            let rt_handle = rt_handle.clone();
                             tokio::task::spawn_local(async move {
-                                Self::handle_socket_in_local_set(socket).await;
+                                Self::handle_socket_in_local_set(socket, rt_handle.clone()).await;
                             });
                         }
                     })
@@ -88,7 +93,7 @@ impl WebSocketServer {
         }
     }
 
-    async fn handle_socket_in_local_set(socket: WebSocket) {
+    async fn handle_socket_in_local_set(socket: WebSocket, rt_handle: tokio::runtime::Handle) {
         let client_id = uuid::Uuid::new_v4().to_string();
 
         println!("Client connected: {}", client_id);
@@ -110,17 +115,22 @@ impl WebSocketServer {
             .with_multi_thread_service::<HelloWorldMultiThreadMultiThreadService<_, _>, _, _>(
                 HelloWorldMultiThreadServiceImpl::new(),
                 move |f| {
-                    // let pinned_future = Box::pin(f);
-                    tokio::task::spawn(f);
-                },
+                    rt_handle.spawn(f);
+                }, // move |f| {
+                   //     // let pinned_future = Box::pin(f);
+                   //     tokio::task::spawn(f);
+                   // },
             )
             .build();
         tokio::task::spawn_local(async move {
-            println!("CalculatorService started");
+            println!(
+                "Rpc Service started at thread: {:?}",
+                std::thread::current().id()
+            );
             if let Err(e) = service.await {
-                eprintln!("CalculatorService finished with error: {:?}", e);
+                eprintln!("Rpc Service finished with error: {:?}", e);
             }
-            println!("CalculatorService finished");
+            println!("Rpc Service finished");
         });
         let task_display_stub_clone = task_display_stub.clone();
         *state.borrow_mut() = Some(task_display_stub_clone);
@@ -308,7 +318,6 @@ where
     }
 }
 
-
 struct CalculatorServiceImpl {
     // task_display_stub: Rc<RefCell<Option<TaskDisplayClient>>>,
 }
@@ -372,6 +381,11 @@ impl HelloWorldMultiThread for HelloWorldMultiThreadServiceImpl {
         format!("hello_world({})", name)
     }
     async fn async_hello_world(&self, name: String) -> String {
+        println!(
+            "async_hello_world({}) at thread: {:?}",
+            name,
+            std::thread::current().id()
+        );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         format!("async_hello_world({})", name)
     }

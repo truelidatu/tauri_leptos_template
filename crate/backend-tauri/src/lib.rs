@@ -18,10 +18,11 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let ws_server = Arc::new(websocket::WebSocketServer::new());
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    
+    let ws_server = Arc::new(websocket::WebSocketServer::new(rt.handle().clone()));
     let ws_server_clone = ws_server.clone();
     
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     rt.spawn(async move {
         let result = ws_server_clone.start(6789).await;
         if let Err(e) = result {
